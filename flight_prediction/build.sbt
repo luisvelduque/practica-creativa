@@ -22,7 +22,9 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-hive" % sparkVersion % "provided",
   "org.apache.spark" %% "spark-sql-kafka-0-10" % sparkVersion,
   "org.mongodb.spark" %% "mongo-spark-connector" % "10.4.1",
-  "com.datastax.spark" %% "spark-cassandra-connector" % "3.5.0"
+  "com.datastax.spark" %% "spark-cassandra-connector" % "3.5.0",
+  "org.apache.hadoop" % "hadoop-aws" % "3.3.4",
+  "com.amazonaws" % "aws-java-sdk-bundle" % "1.12.262"
 )
 
 // conflictos de clases duplicadas entre JARs distintos al empaquetar. 

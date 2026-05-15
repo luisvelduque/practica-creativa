@@ -1,5 +1,4 @@
 package es.upm.dit.ging.predictor
-import com.mongodb.spark._
 import org.apache.spark.ml.classification.RandomForestClassificationModel
 import org.apache.spark.ml.feature.{Bucketizer, StringIndexerModel, VectorAssembler}
 import org.apache.spark.sql.functions.{concat, from_json, lit}
@@ -20,29 +19,32 @@ object MakePrediction {
       .appName("StructuredNetworkWordCount")
       .master("local[*]")
       .config("spark.cassandra.connection.host", sys.env.getOrElse("CASSANDRA_HOST", "cassandra"))
+      .config("spark.hadoop.fs.s3a.endpoint", sys.env.getOrElse("MINIO_ENDPOINT", "http://minio:9000"))
+      .config("spark.hadoop.fs.s3a.access.key", sys.env.getOrElse("MINIO_ACCESS_KEY", "minioadmin"))
+      .config("spark.hadoop.fs.s3a.secret.key", sys.env.getOrElse("MINIO_SECRET_KEY", "minioadmin"))
+      .config("spark.hadoop.fs.s3a.path.style.access", "true")
+      .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
       .getOrCreate()
     import spark.implicits._
 
     //Load the arrival delay bucketizer
-    val base_path= sys.env.getOrElse("BASE_PATH", "/app")
-    val arrivalBucketizerPath = "%s/models/arrival_bucketizer_2.0.bin".format(base_path)
+    val models_path = sys.env.getOrElse("MODELS_PATH", "s3a://lakehouse/models")
+    val arrivalBucketizerPath = "%s/arrival_bucketizer_2.0.bin".format(models_path)
     print(arrivalBucketizerPath.toString())
     val arrivalBucketizer = Bucketizer.load(arrivalBucketizerPath)
     val columns= Seq("Carrier","Origin","Dest","Route")
 
     //Load all the string field vectorizer pipelines into a dict
-    val stringIndexerModelPath =  columns.map(n=> ("%s/models/string_indexer_model_"
-      .format(base_path)+"%s.bin".format(n)).toSeq)
-    val stringIndexerModel = stringIndexerModelPath.map{n => StringIndexerModel.load(n.toString)}
+    val stringIndexerModelPath = columns.map(n => "%s/string_indexer_model_%s.bin".format(models_path, n))
+    val stringIndexerModel = stringIndexerModelPath.map(n => StringIndexerModel.load(n))
     val stringIndexerModels  = (columns zip stringIndexerModel).toMap
 
     // Load the numeric vector assembler
-    val vectorAssemblerPath = "%s/models/numeric_vector_assembler.bin".format(base_path)
+    val vectorAssemblerPath = "%s/numeric_vector_assembler_2.0.bin".format(models_path)
     val vectorAssembler = VectorAssembler.load(vectorAssemblerPath)
 
     // Load the classifier model
-    val randomForestModelPath = "%s/models/spark_random_forest_classifier.flight_delays.5.0.bin".format(
-      base_path)
+    val randomForestModelPath = "%s/spark_random_forest_classifier_2.0.bin".format(models_path)
     val rfc = RandomForestClassificationModel.load(randomForestModelPath)
 
     //Process Prediction Requests in Streaming

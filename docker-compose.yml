@@ -114,6 +114,9 @@ services:
         PROJECT_HOME: /app
         CASSANDRA_HOST: cassandra
         KAFKA_HOST: kafka
+      volumes:
+        - ./data:/app/data
+        - ./models:/app/models
       healthcheck:
         test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
         interval: 30s
@@ -160,6 +163,10 @@ services:
       environment:
         BASE_PATH: /app
         CASSANDRA_HOST: cassandra
+        MINIO_ENDPOINT: http://minio:9000
+        MINIO_ACCESS_KEY: minioadmin
+        MINIO_SECRET_KEY: minioadmin
+        MODELS_PATH: s3a://lakehouse/models
       volumes:
         - ./flight_prediction/target/scala-2.12/flight_prediction-assembly-0.1.jar:/app/flight_prediction-assembly-0.1.jar
         - ./models:/app/models

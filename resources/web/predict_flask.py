@@ -502,7 +502,7 @@ def classify_flight_delays_realtime():
       "Dest": str,
       "FlightNum": str,
       "Origin": str
-    }
+    } 
 
   # Fetch the values for each field from the form object
   api_form_values = {}
