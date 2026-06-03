@@ -42,7 +42,19 @@ def main(base_path):
                 "org.apache.hadoop.fs.s3a.S3AFileSystem") \
         .getOrCreate()
 
-  
+  import mlflow
+  import mlflow.spark
+
+  # Configurar MLflow — usa la URL del servicio mlflow si está disponible,
+  # si no, guarda los experimentos en local
+  mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+  try:
+    mlflow.set_tracking_uri(mlflow_uri)
+    mlflow.set_experiment("flight_delay_prediction")
+  except Exception:
+    # Si MLflow no está disponible, continúa sin tracking
+    pass
+
   #
   # {
   #   "ArrDelay":5.0,"CRSArrTime":"2015-12-31T03:20:00.000-08:00","CRSDepTime":"2015-12-31T03:05:00.000-08:00",
@@ -69,132 +81,143 @@ def main(base_path):
     StructField("FlightNum", StringType(), True),   # "FlightNum":"6109"
     StructField("Origin", StringType(), True),      # "Origin":"TUS"
   ])
-  
-  features = spark.read.format("iceberg").load("s3a://lakehouse/flights")
-  features.first()
-  
-  #
-  # Check for nulls in features before using Spark ML
-  #
-  null_counts = [(column, features.where(features[column].isNull()).count()) for column in features.columns]
-  cols_with_nulls = filter(lambda x: x[1] > 0, null_counts)
-  print(list(cols_with_nulls))
-  
-  #
-  # Add a Route variable to replace FlightNum
-  #
-  from pyspark.sql.functions import lit, concat
-  features_with_route = features.withColumn(
-    'Route',
-    concat(
-      features.Origin,
-      lit('-'),
-      features.Dest
-    )
-  )
-  features_with_route.show(6)
-  
-  #
-  # Use pysmark.ml.feature.Bucketizer to bucketize ArrDelay into on-time, slightly late, very late (0, 1, 2)
-  #
-  from pyspark.ml.feature import Bucketizer
-  
-  # Setup the Bucketizer
-  splits = [-float("inf"), -15.0, 0, 30.0, float("inf")]
-  arrival_bucketizer = Bucketizer(
-    splits=splits,
-    inputCol="ArrDelay",
-    outputCol="ArrDelayBucket"
-  )
-  
-  # Save the bucketizer
-  arrival_bucketizer_path = "s3a://lakehouse/models/arrival_bucketizer_2.0.bin"
-  arrival_bucketizer.write().overwrite().save(arrival_bucketizer_path)
-  
-  # Apply the bucketizer
-  ml_bucketized_features = arrival_bucketizer.transform(features_with_route)
-  ml_bucketized_features.select("ArrDelay", "ArrDelayBucket").show()
-  
-  #
-  # Extract features tools in with pyspark.ml.feature
-  #
-  from pyspark.ml.feature import StringIndexer, VectorAssembler
-  
-  # Turn category fields into indexes
-  for column in ["Carrier", "Origin", "Dest", "Route"]:
-    string_indexer = StringIndexer(
-      inputCol=column,
-      outputCol=column + "_index"
-    )
-    
-    string_indexer_model = string_indexer.fit(ml_bucketized_features)
-    ml_bucketized_features = string_indexer_model.transform(ml_bucketized_features)
-    
-    # Drop the original column
-    ml_bucketized_features = ml_bucketized_features.drop(column)
-    
-    # Save the pipeline model
-    string_indexer_output_path = "s3a://lakehouse/models/string_indexer_model_{}.bin".format(column)
 
-    string_indexer_model.write().overwrite().save(string_indexer_output_path)
-  
-  # Combine continuous, numeric fields with indexes of nominal ones
-  # ...into one feature vector
-  numeric_columns = [
-    "DepDelay", "Distance",
-    "DayOfMonth", "DayOfWeek",
-    "DayOfYear"]
-  index_columns = ["Carrier_index", "Origin_index",
-                   "Dest_index", "Route_index"]
-  vector_assembler = VectorAssembler(
-    inputCols=numeric_columns + index_columns,
-    outputCol="Features_vec"
-  )
-  final_vectorized_features = vector_assembler.transform(ml_bucketized_features)
-  
-  # Save the numeric vector assembler
-  vector_assembler_path = "s3a://lakehouse/models/numeric_vector_assembler_2.0.bin"
-  vector_assembler.write().overwrite().save(vector_assembler_path)
-  
-  # Drop the index columns
-  for column in index_columns:
-    final_vectorized_features = final_vectorized_features.drop(column)
-  
-  # Inspect the finalized features
-  final_vectorized_features.show()
-  
-  # Instantiate and fit random forest classifier on all the data
-  from pyspark.ml.classification import RandomForestClassifier
-  rfc = RandomForestClassifier(
-    featuresCol="Features_vec",
-    labelCol="ArrDelayBucket",
-    predictionCol="Prediction",
-    maxBins=4657,
-    maxMemoryInMB=1024
-  )
-  model = rfc.fit(final_vectorized_features)
-  
-  # Save the new model over the old one
-  model_output_path = "s3a://lakehouse/models/spark_random_forest_classifier_2.0.bin"
-  model.write().overwrite().save(model_output_path)
-  
-  # Evaluate model using test data
-  predictions = model.transform(final_vectorized_features)
-  
-  from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-  evaluator = MulticlassClassificationEvaluator(
-    predictionCol="Prediction",
-    labelCol="ArrDelayBucket",
-    metricName="accuracy"
-  )
-  accuracy = evaluator.evaluate(predictions)
-  print("Accuracy = {}".format(accuracy))
-  
-  # Check the distribution of predictions
-  predictions.groupBy("Prediction").count().show()
-  
-  # Check a sample
-  predictions.sample(False, 0.001, 18).orderBy("CRSDepTime").show(6)
+  # Abrimos el run de MLflow que engloba todo el entrenamiento
+  with mlflow.start_run():
+
+    # Registrar parámetros del experimento
+    splits = [-float("inf"), -15.0, 0, 30.0, float("inf")]
+    mlflow.log_param("algorithm", "RandomForest")
+    mlflow.log_param("maxBins", 4657)
+    mlflow.log_param("maxMemoryInMB", 1024)
+    mlflow.log_param("splits", str(splits))
+
+    features = spark.read.format("iceberg").load("s3a://lakehouse/flights")
+    features.first()
+    
+    #
+    # Check for nulls in features before using Spark ML
+    #
+    null_counts = [(column, features.where(features[column].isNull()).count()) for column in features.columns]
+    cols_with_nulls = filter(lambda x: x[1] > 0, null_counts)
+    print(list(cols_with_nulls))
+    
+    #
+    # Add a Route variable to replace FlightNum
+    #
+    from pyspark.sql.functions import lit, concat
+    features_with_route = features.withColumn(
+      'Route',
+      concat(
+        features.Origin,
+        lit('-'),
+        features.Dest
+      )
+    )
+    features_with_route.show(6)
+    
+    #
+    # Use pyspark.ml.feature.Bucketizer to bucketize ArrDelay into on-time, slightly late, very late (0, 1, 2)
+    #
+    from pyspark.ml.feature import Bucketizer
+    
+    arrival_bucketizer = Bucketizer(
+      splits=splits,
+      inputCol="ArrDelay",
+      outputCol="ArrDelayBucket"
+    )
+    
+    # Save the bucketizer
+    arrival_bucketizer_path = "s3a://lakehouse/models/arrival_bucketizer_2.0.bin"
+    arrival_bucketizer.write().overwrite().save(arrival_bucketizer_path)
+    
+    # Apply the bucketizer
+    ml_bucketized_features = arrival_bucketizer.transform(features_with_route)
+    ml_bucketized_features.select("ArrDelay", "ArrDelayBucket").show()
+    
+    #
+    # Extract features tools in with pyspark.ml.feature
+    #
+    from pyspark.ml.feature import StringIndexer, VectorAssembler
+    
+    # Turn category fields into indexes
+    for column in ["Carrier", "Origin", "Dest", "Route"]:
+      string_indexer = StringIndexer(
+        inputCol=column,
+        outputCol=column + "_index"
+      )
+      
+      string_indexer_model = string_indexer.fit(ml_bucketized_features)
+      ml_bucketized_features = string_indexer_model.transform(ml_bucketized_features)
+      
+      # Drop the original column
+      ml_bucketized_features = ml_bucketized_features.drop(column)
+      
+      # Save the pipeline model
+      string_indexer_output_path = "s3a://lakehouse/models/string_indexer_model_{}.bin".format(column)
+      string_indexer_model.write().overwrite().save(string_indexer_output_path)
+    
+    # Combine continuous, numeric fields with indexes of nominal ones
+    # ...into one feature vector
+    numeric_columns = [
+      "DepDelay", "Distance",
+      "DayOfMonth", "DayOfWeek",
+      "DayOfYear"]
+    index_columns = ["Carrier_index", "Origin_index",
+                     "Dest_index", "Route_index"]
+    vector_assembler = VectorAssembler(
+      inputCols=numeric_columns + index_columns,
+      outputCol="Features_vec"
+    )
+    final_vectorized_features = vector_assembler.transform(ml_bucketized_features)
+    
+    # Save the numeric vector assembler
+    vector_assembler_path = "s3a://lakehouse/models/numeric_vector_assembler_2.0.bin"
+    vector_assembler.write().overwrite().save(vector_assembler_path)
+    
+    # Drop the index columns
+    for column in index_columns:
+      final_vectorized_features = final_vectorized_features.drop(column)
+    
+    # Inspect the finalized features
+    final_vectorized_features.show()
+    
+    # Instantiate and fit random forest classifier on all the data
+    from pyspark.ml.classification import RandomForestClassifier
+    rfc = RandomForestClassifier(
+      featuresCol="Features_vec",
+      labelCol="ArrDelayBucket",
+      predictionCol="Prediction",
+      maxBins=4657,
+      maxMemoryInMB=1024
+    )
+    model = rfc.fit(final_vectorized_features)
+    
+    # Save the new model over the old one
+    model_output_path = "s3a://lakehouse/models/spark_random_forest_classifier_2.0.bin"
+    model.write().overwrite().save(model_output_path)
+    
+    # Evaluate model using test data
+    predictions = model.transform(final_vectorized_features)
+    
+    from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+    evaluator = MulticlassClassificationEvaluator(
+      predictionCol="Prediction",
+      labelCol="ArrDelayBucket",
+      metricName="accuracy"
+    )
+    accuracy = evaluator.evaluate(predictions)
+    print("Accuracy = {}".format(accuracy))
+
+    # Registrar métricas y modelo en MLflow
+    mlflow.log_metric("accuracy", accuracy)
+    mlflow.spark.log_model(model, "random_forest_model")
+
+    # Check the distribution of predictions
+    predictions.groupBy("Prediction").count().show()
+    
+    # Check a sample
+    predictions.sample(False, 0.001, 18).orderBy("CRSDepTime").show(6)
 
 if __name__ == "__main__":
   main(sys.argv[1])
