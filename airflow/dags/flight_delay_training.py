@@ -1,21 +1,8 @@
+import os
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.docker.operators.docker import DockerOperator
 from datetime import datetime, timedelta
-import subprocess
-
-
-def run_ingestion():
-    """Ingest flight data into MinIO/Iceberg lakehouse."""
-    subprocess.run(["python", "/app/resources/ingest.py"], check=True)
-
-
-def run_training():
-    """Train the RandomForest model and log results to MLflow."""
-    subprocess.run(
-        ["python", "/app/resources/train_spark_mllib_model.py", "."],
-        check=True
-    )
-
+from docker.types import Mount
 
 default_args = {
     'owner': 'airflow',
@@ -32,14 +19,50 @@ with DAG(
     catchup=False,
 ) as dag:
 
-    ingest = PythonOperator(
+    # Ejecuta ingest.py dentro del contenedor Flask que ya tiene PySpark y Java
+    ingest = DockerOperator(
         task_id='ingest_data',
-        python_callable=run_ingestion,
+        image='practica_creativa-flask',
+        command='python resources/ingest.py',
+        network_mode='practica_creativa_default',
+        auto_remove='success',
+        mount_tmp_dir=False,
+        docker_url='unix://var/run/docker.sock',
+        mounts=[
+            Mount(
+                source=os.environ.get('PROJECT_DATA_PATH', '/app/data'),
+                target='/app/data',
+                type='bind'
+            )
+        ],
+        environment={
+            'CASSANDRA_HOST': 'cassandra',
+            'KAFKA_HOST': 'kafka',
+            'MONGO_HOST': 'mongodb',
+            'MONGO_USER': 'admin',
+            'MONGO_PASSWORD': os.environ.get('MONGO_PASSWORD', ''),
+            'PROJECT_HOME': '/app',
+        },
     )
 
-    train = PythonOperator(
+    # Ejecuta train_spark_mllib_model.py dentro del contenedor Flask
+    train = DockerOperator(
         task_id='train_model',
-        python_callable=run_training,
+        image='practica_creativa-flask',
+        command='python resources/train_spark_mllib_model.py .',
+        network_mode='practica_creativa_default',
+        auto_remove='success',
+        mount_tmp_dir=False,
+        docker_url='unix://var/run/docker.sock',
+        environment={
+            'CASSANDRA_HOST': 'cassandra',
+            'KAFKA_HOST': 'kafka',
+            'MONGO_HOST': 'mongodb',
+            'MONGO_USER': 'admin',
+            'MONGO_PASSWORD': os.environ.get('MONGO_PASSWORD', ''),
+            'PROJECT_HOME': '/app',
+            'MLFLOW_TRACKING_URI': 'http://mlflow:5000',
+        },
     )
 
-    ingest >> train  # ingest primero, luego entrenamiento
+    ingest >> train
