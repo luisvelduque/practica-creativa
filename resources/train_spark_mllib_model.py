@@ -213,7 +213,7 @@ def main(base_path):
 
     # Registrar métricas y modelo en MLflow
     mlflow.log_metric("accuracy", accuracy)
-    mlflow.spark.log_model(model, "random_forest_model")
+    #mlflow.spark.log_model(model, "random_forest_model")
 
     # Check the distribution of predictions
     predictions.groupBy("Prediction").count().show()
