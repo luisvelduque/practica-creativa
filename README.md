@@ -90,25 +90,43 @@ Create a `.env` file in the project root:
 MONGO_PASSWORD=your_password
 ```
 
-**3. Start all services**
+**3. Download training data**
+```bash
+bash resources/download_data.sh
+```
+
+**4. Start all services**
 ```bash
 docker compose up -d --build
 ```
 
-**4. Ingest training data into MinIO/Iceberg**
+**5. Create MinIO buckets(first time only)**
+```bash
+docker compose exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
+docker compose exec minio mc mb local/lakehouse
+docker compose exec minio mc mb local/mlflow
+```
+
+**6. Ingest training data into MinIO/Iceberg**
 ```bash
 docker compose exec flask python resources/ingest.py
 ```
 
-**5. Train the model**
+**7. Train the model**
 ```bash
 docker compose exec flask python resources/train_spark_mllib_model.py .
 ```
 
-**6. Restart spark-submit to load the trained models**
+**8. Restart spark-submit to load the trained models**
 ```bash
 docker compose restart spark-submit
 ```
+**9. Trigger the training pipeline via Airflow (optional - runs automatically weekly)**
+```bash
+docker compose exec airflow-webserver airflow dags trigger flight_delay_training
+```
+
+
 
 ### Accessing the services
 
@@ -119,3 +137,4 @@ docker compose restart spark-submit
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | Prometheus | http://localhost:9090 | — |
 | Grafana | http://localhost:3000 | admin / admin |
+
